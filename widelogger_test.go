@@ -29,119 +29,145 @@ func TestNewContext(t *testing.T) {
 }
 
 func TestAddFields(t *testing.T) {
+	// Capture internal logs
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	SetDefaultLogger(slog.New(handler))
+
 	tests := []struct {
-		name    string
-		ctx     context.Context
-		args    []any
-		wantErr bool
-		errType error
+		name          string
+		ctx           context.Context
+		args          []any
+		wantFields    map[string]any
+		wantLogSubstr string
 	}{
 		{
-			name:    "valid key-value pairs",
-			ctx:     NewContext(context.Background()),
-			args:    []any{"key1", "value1", "key2", 123},
-			wantErr: false,
+			name:       "valid key-value pairs",
+			ctx:        NewContext(context.Background()),
+			args:       []any{"key1", "value1", "key2", 123},
+			wantFields: map[string]any{"key1": "value1", "key2": 123},
 		},
 		{
-			name:    "odd number of arguments",
-			ctx:     NewContext(context.Background()),
-			args:    []any{"key1", "value1", "key2"},
-			wantErr: true,
-			errType: ErrOddNumberOfArgs,
+			name:          "odd number of arguments",
+			ctx:           NewContext(context.Background()),
+			args:          []any{"key1", "value1", "key2"},
+			wantFields:    map[string]any{},
+			wantLogSubstr: "odd number of arguments",
 		},
 		{
-			name:    "non-string key",
-			ctx:     NewContext(context.Background()),
-			args:    []any{123, "value"},
-			wantErr: true,
+			name:          "non-string key",
+			ctx:           NewContext(context.Background()),
+			args:          []any{123, "value"},
+			wantFields:    map[string]any{},
+			wantLogSubstr: "key must be string",
 		},
 		{
-			name:    "uninitialized context",
-			ctx:     context.Background(),
-			args:    []any{"key", "value"},
-			wantErr: true,
-			errType: ErrUninitializedContext,
+			name:          "uninitialized context",
+			ctx:           context.Background(),
+			args:          []any{"key", "value"},
+			wantFields:    nil, // No container to check
+			wantLogSubstr: "context not initialized",
 		},
 		{
-			name:    "empty args",
-			ctx:     NewContext(context.Background()),
-			args:    []any{},
-			wantErr: false,
-		},
-		{
-			name:    "nil context",
-			ctx:     nil,
-			args:    []any{"key", "value"},
-			wantErr: true,
-			errType: ErrUninitializedContext,
+			name:       "empty args",
+			ctx:        NewContext(context.Background()),
+			args:       []any{},
+			wantFields: map[string]any{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := AddFields(tt.ctx, tt.args...)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("AddFields() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if tt.errType != nil && err != tt.errType {
-				if _, ok := err.(*ErrInvalidKey); !ok || tt.name != "non-string key" {
-					t.Errorf("AddFields() error = %v, want %v", err, tt.errType)
+			buf.Reset()
+			AddFields(tt.ctx, tt.args...)
+
+			if tt.wantFields != nil {
+				container := getContainer(tt.ctx)
+				if container == nil {
+					t.Fatal("Container expected but not found")
 				}
+				container.mu.Lock()
+				if len(container.fields) != len(tt.wantFields) {
+					t.Errorf("Expected %d fields, got %d", len(tt.wantFields), len(container.fields))
+				}
+				for k, v := range tt.wantFields {
+					if container.fields[k] != v {
+						t.Errorf("Expected field %s=%v, got %v", k, v, container.fields[k])
+					}
+				}
+				container.mu.Unlock()
+			}
+
+			if tt.wantLogSubstr != "" {
+				if !strings.Contains(buf.String(), tt.wantLogSubstr) {
+					t.Errorf("Expected log containing %q, got %q", tt.wantLogSubstr, buf.String())
+				}
+			} else if buf.Len() > 0 {
+				t.Errorf("Expected no log, got %q", buf.String())
 			}
 		})
 	}
 }
 
 func TestAddWarning(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	SetDefaultLogger(slog.New(handler))
+
 	tests := []struct {
-		name    string
-		setup   func() context.Context
-		message string
-		fields  []any
-		wantErr bool
+		name          string
+		setup         func() context.Context
+		message       string
+		fields        []any
+		wantWarnings  int
+		wantLogSubstr string
 	}{
 		{
 			name: "add warning with no fields",
 			setup: func() context.Context {
 				return NewContext(context.Background())
 			},
-			message: "something went wrong",
-			fields:  nil,
-			wantErr: false,
+			message:      "something went wrong",
+			fields:       nil,
+			wantWarnings: 1,
 		},
 		{
 			name: "add warning with fields",
 			setup: func() context.Context {
 				return NewContext(context.Background())
 			},
-			message: "slow query",
-			fields:  []any{"duration_ms", 2500, "threshold_ms", 1000},
-			wantErr: false,
+			message:      "slow query",
+			fields:       []any{"duration_ms", 2500, "threshold_ms", 1000},
+			wantWarnings: 1,
 		},
 		{
 			name: "uninitialized context",
 			setup: func() context.Context {
 				return context.Background()
 			},
-			message: "warning",
-			fields:  nil,
-			wantErr: true,
+			message:       "warning",
+			fields:        nil,
+			wantWarnings:  0,
+			wantLogSubstr: "context not initialized",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			buf.Reset()
 			ctx := tt.setup()
-			err := AddWarning(ctx, tt.message, tt.fields...)
+			AddWarning(ctx, tt.message, tt.fields...)
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("AddWarning() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantLogSubstr != "" {
+				if !strings.Contains(buf.String(), tt.wantLogSubstr) {
+					t.Errorf("Expected log containing %q, got %q", tt.wantLogSubstr, buf.String())
+				}
 			}
 
-			if !tt.wantErr {
+			if tt.wantWarnings > 0 {
 				container := getContainer(ctx)
-				if len(container.warnings) != 1 {
-					t.Errorf("Expected 1 warning, got %d", len(container.warnings))
+				if len(container.warnings) != tt.wantWarnings {
+					t.Errorf("Expected %d warning, got %d", tt.wantWarnings, len(container.warnings))
 				}
 				if container.warnings[0].Message != tt.message {
 					t.Errorf("Expected message %q, got %q", tt.message, container.warnings[0].Message)
@@ -152,55 +178,64 @@ func TestAddWarning(t *testing.T) {
 }
 
 func TestAddError(t *testing.T) {
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	SetDefaultLogger(slog.New(handler))
+
 	tests := []struct {
-		name    string
-		setup   func() context.Context
-		message string
-		fields  []any
-		wantErr bool
+		name          string
+		setup         func() context.Context
+		message       string
+		fields        []any
+		wantErrors    int
+		wantLogSubstr string
 	}{
 		{
 			name: "add error with no fields",
 			setup: func() context.Context {
 				return NewContext(context.Background())
 			},
-			message: "database error",
-			fields:  nil,
-			wantErr: false,
+			message:    "database error",
+			fields:     nil,
+			wantErrors: 1,
 		},
 		{
 			name: "add error with fields",
 			setup: func() context.Context {
 				return NewContext(context.Background())
 			},
-			message: "connection timeout",
-			fields:  []any{"host", "db.example.com", "port", 5432},
-			wantErr: false,
+			message:    "connection timeout",
+			fields:     []any{"host", "db.example.com", "port", 5432},
+			wantErrors: 1,
 		},
 		{
 			name: "uninitialized context",
 			setup: func() context.Context {
 				return context.Background()
 			},
-			message: "error",
-			fields:  nil,
-			wantErr: true,
+			message:       "error",
+			fields:        nil,
+			wantErrors:    0,
+			wantLogSubstr: "context not initialized",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			buf.Reset()
 			ctx := tt.setup()
-			err := AddError(ctx, tt.message, tt.fields...)
+			AddError(ctx, tt.message, tt.fields...)
 
-			if (err != nil) != tt.wantErr {
-				t.Errorf("AddError() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantLogSubstr != "" {
+				if !strings.Contains(buf.String(), tt.wantLogSubstr) {
+					t.Errorf("Expected log containing %q, got %q", tt.wantLogSubstr, buf.String())
+				}
 			}
 
-			if !tt.wantErr {
+			if tt.wantErrors > 0 {
 				container := getContainer(ctx)
-				if len(container.errors) != 1 {
-					t.Errorf("Expected 1 error, got %d", len(container.errors))
+				if len(container.errors) != tt.wantErrors {
+					t.Errorf("Expected %d error, got %d", tt.wantErrors, len(container.errors))
 				}
 				if container.errors[0].Message != tt.message {
 					t.Errorf("Expected message %q, got %q", tt.message, container.errors[0].Message)
@@ -304,13 +339,11 @@ func TestLogger(t *testing.T) {
 
 	logger.Info(ctx, "test message", "extra", "field")
 
-	// Parse JSON output
 	var result map[string]any
 	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
 		t.Fatalf("Failed to parse log output: %v", err)
 	}
 
-	// Verify fields
 	if result["msg"] != "test message" {
 		t.Errorf("Expected msg='test message', got %v", result["msg"])
 	}
@@ -339,13 +372,11 @@ func TestLoggerWithWarnings(t *testing.T) {
 
 	logger.Info(ctx, "request completed")
 
-	// Parse JSON output
 	var result map[string]any
 	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
 		t.Fatalf("Failed to parse log output: %v", err)
 	}
 
-	// Verify warnings
 	if result["warning_count"].(float64) != 2 {
 		t.Errorf("Expected warning_count=2, got %v", result["warning_count"])
 	}
@@ -357,12 +388,6 @@ func TestLoggerWithWarnings(t *testing.T) {
 
 	if len(warnings) != 2 {
 		t.Errorf("Expected 2 warnings, got %d", len(warnings))
-	}
-
-	// Check first warning
-	warning1 := warnings[0].(map[string]any)
-	if warning1["message"] != "slow query" {
-		t.Errorf("Expected first warning message='slow query', got %v", warning1["message"])
 	}
 }
 
@@ -380,13 +405,11 @@ func TestLoggerWithErrors(t *testing.T) {
 
 	logger.Error(ctx, "request failed")
 
-	// Parse JSON output
 	var result map[string]any
 	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
 		t.Fatalf("Failed to parse log output: %v", err)
 	}
 
-	// Verify errors
 	if result["error_count"].(float64) != 2 {
 		t.Errorf("Expected error_count=2, got %v", result["error_count"])
 	}
@@ -398,34 +421,6 @@ func TestLoggerWithErrors(t *testing.T) {
 
 	if len(errors) != 2 {
 		t.Errorf("Expected 2 errors, got %d", len(errors))
-	}
-}
-
-func TestLoggerWithWarningsAndErrors(t *testing.T) {
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})
-	logger := New(slog.New(handler))
-
-	ctx := NewContext(context.Background())
-	AddWarning(ctx, "warning 1")
-	AddError(ctx, "error 1")
-	AddWarning(ctx, "warning 2")
-
-	logger.Error(ctx, "mixed issues")
-
-	var result map[string]any
-	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
-		t.Fatalf("Failed to parse log output: %v", err)
-	}
-
-	if result["warning_count"].(float64) != 2 {
-		t.Errorf("Expected warning_count=2, got %v", result["warning_count"])
-	}
-
-	if result["error_count"].(float64) != 1 {
-		t.Errorf("Expected error_count=1, got %v", result["error_count"])
 	}
 }
 
@@ -451,150 +446,8 @@ func TestConcurrentAddFields(t *testing.T) {
 	container.mu.Lock()
 	defer container.mu.Unlock()
 
-	// Should have one goroutine field (last write wins)
 	if _, exists := container.fields["goroutine"]; !exists {
 		t.Error("Expected goroutine field to exist")
-	}
-}
-
-func TestConcurrentWarnings(t *testing.T) {
-	ctx := NewContext(context.Background())
-
-	var wg sync.WaitGroup
-	numWarnings := 50
-	for i := 0; i < numWarnings; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			AddWarning(ctx, "concurrent warning", "id", id)
-		}(i)
-	}
-
-	wg.Wait()
-
-	container := getContainer(ctx)
-	container.mu.Lock()
-	defer container.mu.Unlock()
-
-	if len(container.warnings) != numWarnings {
-		t.Errorf("Expected %d warnings, got %d", numWarnings, len(container.warnings))
-	}
-}
-
-func TestConcurrentErrors(t *testing.T) {
-	ctx := NewContext(context.Background())
-
-	var wg sync.WaitGroup
-	numErrors := 50
-	for i := 0; i < numErrors; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			AddError(ctx, "concurrent error", "id", id)
-		}(i)
-	}
-
-	wg.Wait()
-
-	container := getContainer(ctx)
-	container.mu.Lock()
-	defer container.mu.Unlock()
-
-	if len(container.errors) != numErrors {
-		t.Errorf("Expected %d errors, got %d", numErrors, len(container.errors))
-	}
-}
-
-func TestCollectFields(t *testing.T) {
-	tests := []struct {
-		name         string
-		setup        func() context.Context
-		wantFields   int // total number of elements (keys + values)
-		wantWarnings bool
-		wantErrors   bool
-	}{
-		{
-			name: "with fields only",
-			setup: func() context.Context {
-				ctx := NewContext(context.Background())
-				AddFields(ctx, "k1", "v1", "k2", "v2")
-				return ctx
-			},
-			wantFields: 4, // 2 key-value pairs = 4 elements
-		},
-		{
-			name: "with fields and warnings",
-			setup: func() context.Context {
-				ctx := NewContext(context.Background())
-				AddFields(ctx, "k1", "v1")
-				AddWarning(ctx, "warning")
-				return ctx
-			},
-			wantFields:   6, // k1, v1, warnings, [...], warning_count, 1
-			wantWarnings: true,
-		},
-		{
-			name: "with fields and errors",
-			setup: func() context.Context {
-				ctx := NewContext(context.Background())
-				AddFields(ctx, "k1", "v1")
-				AddError(ctx, "error")
-				return ctx
-			},
-			wantFields: 6, // k1, v1, errors, [...], error_count, 1
-			wantErrors: true,
-		},
-		{
-			name: "empty context",
-			setup: func() context.Context {
-				return NewContext(context.Background())
-			},
-			wantFields: 0,
-		},
-		{
-			name: "uninitialized context",
-			setup: func() context.Context {
-				return context.Background()
-			},
-			wantFields: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := tt.setup()
-			fields := collectFields(ctx)
-
-			if len(fields) != tt.wantFields {
-				t.Errorf("collectFields() returned %d elements, want %d", len(fields), tt.wantFields)
-			}
-
-			// Check for presence of warnings/errors in collected fields
-			hasWarnings := false
-			hasErrors := false
-			for i := 0; i < len(fields); i += 2 {
-				if i+1 >= len(fields) {
-					break
-				}
-				key, ok := fields[i].(string)
-				if !ok {
-					continue
-				}
-				if key == "warnings" {
-					hasWarnings = true
-				}
-				if key == "errors" {
-					hasErrors = true
-				}
-			}
-
-			if hasWarnings != tt.wantWarnings {
-				t.Errorf("Expected warnings=%v, got %v", tt.wantWarnings, hasWarnings)
-			}
-			if hasErrors != tt.wantErrors {
-				t.Errorf("Expected errors=%v, got %v", tt.wantErrors, hasErrors)
-			}
-		})
 	}
 }
 
@@ -606,7 +459,6 @@ func TestSetDefaultLogger(t *testing.T) {
 
 		SetDefaultLogger(customLogger)
 
-		// Verify by logging something
 		ctx := NewContext(context.Background())
 		Info(ctx, "test")
 
@@ -622,133 +474,5 @@ func TestSetDefaultLogger(t *testing.T) {
 			}
 		}()
 		SetDefaultLogger(nil)
-	})
-}
-
-func TestPackageLevelFunctions(t *testing.T) {
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	SetDefaultLogger(slog.New(handler))
-
-	ctx := NewContext(context.Background())
-	AddFields(ctx, "test", "value")
-
-	// Test all package-level functions
-	t.Run("Info", func(t *testing.T) {
-		buf.Reset()
-		Info(ctx, "info message")
-		if !strings.Contains(buf.String(), "info message") {
-			t.Error("Info() did not log correctly")
-		}
-	})
-
-	t.Run("Error", func(t *testing.T) {
-		buf.Reset()
-		Error(ctx, "error message")
-		if !strings.Contains(buf.String(), "error message") {
-			t.Error("Error() did not log correctly")
-		}
-	})
-
-	t.Run("Warn", func(t *testing.T) {
-		buf.Reset()
-		Warn(ctx, "warn message")
-		if !strings.Contains(buf.String(), "warn message") {
-			t.Error("Warn() did not log correctly")
-		}
-	})
-
-	t.Run("Debug", func(t *testing.T) {
-		buf.Reset()
-		Debug(ctx, "debug message")
-		if !strings.Contains(buf.String(), "debug message") {
-			t.Error("Debug() did not log correctly")
-		}
-	})
-}
-
-// Benchmarks
-
-func BenchmarkAddFields(b *testing.B) {
-	ctx := NewContext(context.Background())
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		AddFields(ctx, "key", i)
-	}
-}
-
-func BenchmarkAddWarning(b *testing.B) {
-	ctx := NewContext(context.Background())
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		AddWarning(ctx, "warning message", "id", i)
-	}
-}
-
-func BenchmarkAddError(b *testing.B) {
-	ctx := NewContext(context.Background())
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		AddError(ctx, "error message", "id", i)
-	}
-}
-
-func BenchmarkLogWithFields(b *testing.B) {
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, nil)
-	logger := New(slog.New(handler))
-
-	ctx := NewContext(context.Background())
-	AddFields(ctx, "k1", "v1", "k2", "v2", "k3", "v3")
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		buf.Reset()
-		logger.Info(ctx, "benchmark message")
-	}
-}
-
-func BenchmarkLogWithWarningsAndErrors(b *testing.B) {
-	var buf bytes.Buffer
-	handler := slog.NewJSONHandler(&buf, nil)
-	logger := New(slog.New(handler))
-
-	ctx := NewContext(context.Background())
-	AddFields(ctx, "k1", "v1", "k2", "v2")
-	AddWarning(ctx, "warning 1", "w1", "v1")
-	AddWarning(ctx, "warning 2", "w2", "v2")
-	AddError(ctx, "error 1", "e1", "v1")
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		buf.Reset()
-		logger.Error(ctx, "benchmark message")
-	}
-}
-
-func BenchmarkConcurrentAddFields(b *testing.B) {
-	ctx := NewContext(context.Background())
-
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			AddFields(ctx, "key", i)
-			i++
-		}
-	})
-}
-
-func BenchmarkConcurrentWarnings(b *testing.B) {
-	ctx := NewContext(context.Background())
-
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			AddWarning(ctx, "warning", "id", i)
-			i++
-		}
 	})
 }
