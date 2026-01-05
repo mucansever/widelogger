@@ -5,7 +5,6 @@ Context-based structured logging for Go with field accumulation. Collects log fi
 Inspired by: https://loggingsucks.com
 
 ## Installation
-
 ```bash
 go get github.com/mucansever/widelogger
 ```
@@ -59,7 +58,15 @@ widelogger.Info(ctx, "user logged in")
 ## HTTP Middleware
 ```go
 mux := http.NewServeMux()
-handler := widelogger.SimpleHTTPMiddleware(mux)
+// Use default middleware
+handler := widelogger.Middleware(mux)
+
+// Or with options
+handler = widelogger.Middleware(mux,
+    widelogger.WithIncludeRequestHeaders("User-Agent"),
+    widelogger.WithExcludePaths("/health"),
+)
+
 http.ListenAndServe(":8080", handler)
 ```
 
@@ -73,7 +80,3 @@ widelogger.AddError(ctx, "database timeout")
 ```
 
 For more examples, see the `examples/` directory.
-
-## License
-
-MIT

@@ -2,6 +2,7 @@ package widelogger
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -66,23 +67,21 @@ func NewContext(ctx context.Context) context.Context {
 }
 
 // AddFields adds key-value pairs to the context for later logging.
-// Keys must be strings. If the context wasn't initialized with NewContext,
-// this function logs a warning and returns an error.
-//
-// Usage: AddFields(ctx, "user_id", 123, "action", "login")
-func AddFields(ctx context.Context, keysAndValues ...any) error {
+// Keys must be strings.
+func AddFields(ctx context.Context, keysAndValues ...any) {
 	if len(keysAndValues) == 0 {
-		return nil
-	}
-
-	if len(keysAndValues)%2 != 0 {
-		return ErrOddNumberOfArgs
+		return
 	}
 
 	container := getContainer(ctx)
 	if container == nil {
-		getDefaultLogger().WarnContext(ctx, "widelogger: AddFields called on uninitialized context - call NewContext first")
-		return ErrUninitializedContext
+		getDefaultLogger().WarnContext(ctx, "widelogger: context not initialized", "func", "AddFields")
+		return
+	}
+
+	if len(keysAndValues)%2 != 0 {
+		getDefaultLogger().WarnContext(ctx, "widelogger: odd number of arguments", "func", "AddFields", "args_len", len(keysAndValues))
+		return
 	}
 
 	container.mu.Lock()
@@ -91,26 +90,23 @@ func AddFields(ctx context.Context, keysAndValues ...any) error {
 	for i := 0; i < len(keysAndValues); i += 2 {
 		key, ok := keysAndValues[i].(string)
 		if !ok {
-			return &ErrInvalidKey{Key: keysAndValues[i]}
+			getDefaultLogger().WarnContext(ctx, "widelogger: key must be string", "key_type", fmt.Sprintf("%T", keysAndValues[i]))
+			continue
 		}
 		container.fields[key] = keysAndValues[i+1]
 	}
-
-	return nil
 }
 
 // AddWarning accumulates a warning without immediately logging it.
 // The warning will be included in the final log entry.
-func AddWarning(ctx context.Context, message string, keysAndValues ...any) error {
+func AddWarning(ctx context.Context, message string, keysAndValues ...any) {
 	container := getContainer(ctx)
 	if container == nil {
-		return ErrUninitializedContext
+		getDefaultLogger().WarnContext(ctx, "widelogger: context not initialized", "func", "AddWarning")
+		return
 	}
 
-	warning := Warning{
-		Message: message,
-	}
-
+	warning := Warning{Message: message}
 	if len(keysAndValues) > 0 {
 		warning.Fields = make(map[string]any)
 		for i := 0; i < len(keysAndValues)-1; i += 2 {
@@ -123,35 +119,29 @@ func AddWarning(ctx context.Context, message string, keysAndValues ...any) error
 	container.mu.Lock()
 	container.warnings = append(container.warnings, warning)
 	container.mu.Unlock()
-
-	return nil
 }
 
 // AddError accumulates an error without immediately logging it.
-func AddError(ctx context.Context, message string, keysAndValues ...any) error {
+func AddError(ctx context.Context, message string, keysAndValues ...any) {
 	container := getContainer(ctx)
 	if container == nil {
-		return ErrUninitializedContext
+		getDefaultLogger().WarnContext(ctx, "widelogger: context not initialized", "func", "AddError")
+		return
 	}
 
-	errorEntry := Warning{
-		Message: message,
-	}
-
+	errEntry := Warning{Message: message}
 	if len(keysAndValues) > 0 {
-		errorEntry.Fields = make(map[string]any)
+		errEntry.Fields = make(map[string]any)
 		for i := 0; i < len(keysAndValues)-1; i += 2 {
 			if key, ok := keysAndValues[i].(string); ok {
-				errorEntry.Fields[key] = keysAndValues[i+1]
+				errEntry.Fields[key] = keysAndValues[i+1]
 			}
 		}
 	}
 
 	container.mu.Lock()
-	container.errors = append(container.errors, errorEntry)
+	container.errors = append(container.errors, errEntry)
 	container.mu.Unlock()
-
-	return nil
 }
 
 func HasWarnings(ctx context.Context) bool {
