@@ -2,8 +2,10 @@ package widelogger
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	mathrand "math/rand/v2"
 	"net/http"
 	"time"
 )
@@ -29,12 +31,45 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return rw.ResponseWriter.Write(b)
 }
 
+type requestIDContextKey struct{}
+
+type RequestIDConfig struct {
+	HeaderName          string
+	Generator           func() string
+	PropagateToResponse bool
+}
+
+func defaultRequestIDConfig() *RequestIDConfig {
+	return &RequestIDConfig{
+		HeaderName:          "X-Request-ID",
+		Generator:           generateUUID,
+		PropagateToResponse: true,
+	}
+}
+
+func generateUUID() string {
+	var b [16]byte
+	_, _ = cryptorand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func GetRequestID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(requestIDContextKey{}).(string)
+	return id
+}
+
 type config struct {
-	logger         *Logger
-	includeHeaders []string
-	excludePaths   map[string]bool
-	onPanic        func(context.Context, any)
-	samplingRate   float64
+	logger          *Logger
+	includeHeaders  []string
+	excludePaths    map[string]bool
+	onPanic         func(context.Context, any)
+	samplingRate    float64
+	requestIDConfig *RequestIDConfig
 }
 
 type Option func(*config)
@@ -79,6 +114,22 @@ func WithSuccessSampling(rate float64) Option {
 	}
 }
 
+func WithRequestID(cfg ...*RequestIDConfig) Option {
+	return func(c *config) {
+		res := defaultRequestIDConfig()
+		if len(cfg) > 0 && cfg[0] != nil {
+			if cfg[0].HeaderName != "" {
+				res.HeaderName = cfg[0].HeaderName
+			}
+			if cfg[0].Generator != nil {
+				res.Generator = cfg[0].Generator
+			}
+			res.PropagateToResponse = cfg[0].PropagateToResponse
+		}
+		c.requestIDConfig = res
+	}
+}
+
 func Middleware(next http.Handler, opts ...Option) http.Handler {
 	cfg := &config{
 		samplingRate: 1.0,
@@ -99,6 +150,18 @@ func Middleware(next http.Handler, opts ...Option) http.Handler {
 
 		start := time.Now()
 		ctx := NewContext(r.Context())
+
+		if cfg.requestIDConfig != nil {
+			requestID := r.Header.Get(cfg.requestIDConfig.HeaderName)
+			if requestID == "" {
+				requestID = cfg.requestIDConfig.Generator()
+			}
+			ctx = context.WithValue(ctx, requestIDContextKey{}, requestID)
+			AddFields(ctx, "request_id", requestID)
+			if cfg.requestIDConfig.PropagateToResponse {
+				w.Header().Set(cfg.requestIDConfig.HeaderName, requestID)
+			}
+		}
 
 		wrapped := &responseWriter{
 			ResponseWriter: w,
@@ -176,7 +239,7 @@ func Middleware(next http.Handler, opts ...Option) http.Handler {
 		shouldLog := true
 		// only sample if not error/warning
 		if logLevel == slog.LevelInfo && cfg.samplingRate < 1.0 {
-			if rand.Float64() > cfg.samplingRate {
+			if mathrand.Float64() > cfg.samplingRate {
 				shouldLog = false
 			}
 		}

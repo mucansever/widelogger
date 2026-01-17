@@ -44,6 +44,7 @@ func main() {
 
 	handler := widelogger.Middleware(mux,
 		widelogger.WithLogger(widelogger.New(logger)),
+		widelogger.WithRequestID(), // enable request ID generation/extraction
 		widelogger.WithIncludeRequestHeaders("User-Agent", "X-Request-ID"),
 		widelogger.WithExcludePaths("/health", "/metrics"),
 		widelogger.WithSuccessSampling(0.5), // log only 50% of successful requests

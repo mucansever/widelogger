@@ -260,3 +260,191 @@ func TestMiddleware_Sampling(t *testing.T) {
 		}
 	})
 }
+
+func TestMiddleware_RequestID_Generated(t *testing.T) {
+	var buf bytes.Buffer
+	slogHandler := slog.NewJSONHandler(&buf, nil)
+	logger := New(slog.New(slogHandler))
+
+	middleware := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithLogger(logger), WithRequestID())
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	var result map[string]any
+	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
+		t.Fatalf("Failed to parse log output: %v", err)
+	}
+
+	requestID, ok := result["request_id"].(string)
+	if !ok || requestID == "" {
+		t.Error("Expected request_id to be generated")
+	}
+
+	// Check UUID format (8-4-4-4-12)
+	if len(requestID) != 36 {
+		t.Errorf("Expected UUID format, got %s", requestID)
+	}
+}
+
+func TestMiddleware_RequestID_Extracted(t *testing.T) {
+	var buf bytes.Buffer
+	slogHandler := slog.NewJSONHandler(&buf, nil)
+	logger := New(slog.New(slogHandler))
+
+	middleware := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithLogger(logger), WithRequestID())
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-Request-ID", "existing-request-id-123")
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	var result map[string]any
+	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
+		t.Fatalf("Failed to parse log output: %v", err)
+	}
+
+	if result["request_id"] != "existing-request-id-123" {
+		t.Errorf("Expected existing request ID, got %v", result["request_id"])
+	}
+}
+
+func TestMiddleware_RequestID_InResponse(t *testing.T) {
+	var buf bytes.Buffer
+	slogHandler := slog.NewJSONHandler(&buf, nil)
+	logger := New(slog.New(slogHandler))
+
+	middleware := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithLogger(logger), WithRequestID())
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	responseID := rec.Header().Get("X-Request-ID")
+	if responseID == "" {
+		t.Error("Expected X-Request-ID in response headers")
+	}
+
+	// Verify the response ID matches the logged ID
+	var result map[string]any
+	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
+		t.Fatalf("Failed to parse log output: %v", err)
+	}
+
+	if result["request_id"] != responseID {
+		t.Errorf("Response ID %s does not match logged ID %v", responseID, result["request_id"])
+	}
+}
+
+func TestMiddleware_RequestID_CustomHeader(t *testing.T) {
+	var buf bytes.Buffer
+	slogHandler := slog.NewJSONHandler(&buf, nil)
+	logger := New(slog.New(slogHandler))
+
+	middleware := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithLogger(logger), WithRequestID(&RequestIDConfig{
+		HeaderName:          "X-Correlation-ID",
+		PropagateToResponse: true,
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-Correlation-ID", "custom-correlation-id")
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	var result map[string]any
+	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
+		t.Fatalf("Failed to parse log output: %v", err)
+	}
+
+	if result["request_id"] != "custom-correlation-id" {
+		t.Errorf("Expected custom-correlation-id, got %v", result["request_id"])
+	}
+
+	if rec.Header().Get("X-Correlation-ID") != "custom-correlation-id" {
+		t.Error("Expected X-Correlation-ID in response headers")
+	}
+}
+
+func TestMiddleware_RequestID_CustomGenerator(t *testing.T) {
+	var buf bytes.Buffer
+	slogHandler := slog.NewJSONHandler(&buf, nil)
+	logger := New(slog.New(slogHandler))
+
+	counter := 0
+	customGenerator := func() string {
+		counter++
+		return "custom-id-" + string(rune('0'+counter))
+	}
+
+	middleware := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithLogger(logger), WithRequestID(&RequestIDConfig{
+		Generator:           customGenerator,
+		PropagateToResponse: true,
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	var result map[string]any
+	if err := json.NewDecoder(&buf).Decode(&result); err != nil {
+		t.Fatalf("Failed to parse log output: %v", err)
+	}
+
+	if result["request_id"] != "custom-id-1" {
+		t.Errorf("Expected custom-id-1, got %v", result["request_id"])
+	}
+}
+
+func TestMiddleware_GetRequestID(t *testing.T) {
+	var capturedRequestID string
+
+	middleware := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedRequestID = GetRequestID(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}), WithRequestID(&RequestIDConfig{
+		HeaderName: "X-Request-ID",
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-Request-ID", "test-request-id")
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	if capturedRequestID != "test-request-id" {
+		t.Errorf("Expected GetRequestID to return 'test-request-id', got %s", capturedRequestID)
+	}
+}
+
+func TestMiddleware_RequestID_NoPropagation(t *testing.T) {
+	middleware := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), WithRequestID(&RequestIDConfig{
+		PropagateToResponse: false,
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	if rec.Header().Get("X-Request-ID") != "" {
+		t.Error("Expected no X-Request-ID in response headers when propagation is disabled")
+	}
+}
