@@ -10,77 +10,48 @@ go get github.com/mucansever/widelogger
 ```
 
 ## Basic Usage
+Accumulate fields in `context.Context` and log them together.
+
 ```go
 ctx := widelogger.NewContext(context.Background())
 widelogger.AddFields(ctx, "user_id", 123)
-widelogger.Info(ctx, "user logged in")
-```
-
-## Sample Output
-```json
-{
-  "time": "2026-01-05T21:24:29.187686+01:00",
-  "level": "INFO",
-  "msg": "http_request_completed",
-  "path": "/hello",
-  "remote_addr": "[::1]:61318",
-  "user_id": "mutlu",
-  "handler": "helloHandler",
-  "duration_ms": 0,
-  "query": "user_id=mutlu",
-  "request_headers": {
-    "User-Agent": "curl/8.7.1"
-  },
-  "status_code": 200,
-  "method": "GET"
-}
-```
-```json
-{
-  "time": "2026-01-05T21:24:35.344458+01:00",
-  "level": "WARN",
-  "msg": "http_request_completed_with_warnings",
-  "duration_ms": 0,
-  "method": "GET",
-  "path": "/hello",
-  "remote_addr": "[::1]:61319",
-  "query": "user_id=",
-  "request_headers": {
-    "User-Agent": "curl/8.7.1"
-  },
-  "handler": "helloHandler",
-  "status_code": 400,
-  "warnings": [
-    {
-      "message": "request missing user_id"
-    }
-  ],
-  "warning_count": 1
-}
+widelogger.AddWarning(ctx, "slow query", "ms", 500)
+widelogger.Info(ctx, "request completed")
 ```
 
 ## HTTP Middleware
+You can transform your HTTP request lifecycles into widelogs easily with the middleware.
+
 ```go
 mux := http.NewServeMux()
-// Use default middleware
-handler := widelogger.Middleware(mux)
 
-// Or with options
-handler = widelogger.Middleware(mux,
+handler := widelogger.Middleware(mux,
     widelogger.WithIncludeRequestHeaders("User-Agent"),
     widelogger.WithExcludePaths("/health"),
+    // log only 10% of successful requests to save space.
+    // requests with warnings, errors, or status >= 400 are always logged.
+    widelogger.WithSuccessSampling(0.1), 
 )
 
 http.ListenAndServe(":8080", handler)
 ```
 
-## Accumulating Warnings and Errors
+## Why widelogger?
+Instead of multiple scattered log lines, you get one "wide" log entry containing everything that happened during that request.
 
-Instead of logging immediately, accumulate warnings and errors:
-```go
-widelogger.AddWarning(ctx, "slow query", "duration_ms", 2500)
-widelogger.AddError(ctx, "database timeout")
-// Single log entry at the end with all context
+```json
+{
+  "time": "2026-01-17T12:00:00Z",
+  "level": "INFO",
+  "msg": "http_request_completed",
+  "method": "GET",
+  "path": "/api/user",
+  "user_id": 123,
+  "duration_ms": 45,
+  "status_code": 200,
+  "warnings": [{"message": "slow query", "fields": {"ms": 500}}]
+}
 ```
 
-For more examples, see the `examples/` directory.
+You can play with the sample server provided in `examples/basic/server.go` by running it with `go run examples/basic/server.go`.
+

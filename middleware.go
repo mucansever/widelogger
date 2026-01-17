@@ -3,6 +3,7 @@ package widelogger
 import (
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"time"
 )
@@ -29,10 +30,11 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 }
 
 type config struct {
-	logger        *Logger
+	logger         *Logger
 	includeHeaders []string
 	excludePaths   map[string]bool
 	onPanic        func(context.Context, any)
+	samplingRate   float64
 }
 
 type Option func(*config)
@@ -66,8 +68,21 @@ func WithPanicHandler(fn func(context.Context, any)) Option {
 	}
 }
 
+func WithSuccessSampling(rate float64) Option {
+	return func(c *config) {
+		if rate < 0 {
+			rate = 0
+		} else if rate > 1 {
+			rate = 1
+		}
+		c.samplingRate = rate
+	}
+}
+
 func Middleware(next http.Handler, opts ...Option) http.Handler {
-	cfg := &config{}
+	cfg := &config{
+		samplingRate: 1.0,
+	}
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -158,6 +173,16 @@ func Middleware(next http.Handler, opts ...Option) http.Handler {
 			logMessage = "http_request_completed"
 		}
 
-		cfg.logger.Log(ctx, logLevel, logMessage)
+		shouldLog := true
+		// only sample if not error/warning
+		if logLevel == slog.LevelInfo && cfg.samplingRate < 1.0 {
+			if rand.Float64() > cfg.samplingRate {
+				shouldLog = false
+			}
+		}
+
+		if shouldLog {
+			cfg.logger.Log(ctx, logLevel, logMessage)
+		}
 	})
 }

@@ -1,5 +1,7 @@
 /*
-widelogger allows you to accumulate log fields throughout a request lifecycle and emit them all at once, providing complete context in a single log entry.
+Package widelogger provides context-based structured logging with field accumulation.
+It allows you to collect log fields throughout a request lifecycle and emit them as a single,
+comprehensive "wide" log entry at the end of the operation.
 
 # Basic Usage
 
@@ -9,17 +11,20 @@ widelogger allows you to accumulate log fields throughout a request lifecycle an
 
 # HTTP Middleware
 
+The middleware manages the context lifecycle and automatically logs the request summary:
+
 	mux := http.NewServeMux()
-	handler := widelogger.SimpleHTTPMiddleware(mux)
+	handler := widelogger.Middleware(mux,
+	    widelogger.WithSuccessSampling(0.1), // Log only 10% of successful requests
+	)
 	http.ListenAndServe(":8080", handler)
 
 # Accumulating Warnings and Errors
 
-Instead of logging immediately, accumulate warnings and errors:
+Instead of logging immediately, you can accumulate issues that will be aggregated into the final log:
 
 	widelogger.AddWarning(ctx, "slow query", "duration_ms", 2500)
 	widelogger.AddError(ctx, "database timeout")
-	// Single log entry at the end with all context
 
 For more examples, see the examples/ directory or visit:
 https://github.com/mucansever/widelogger

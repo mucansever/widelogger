@@ -177,3 +177,86 @@ func TestMiddleware_AddFieldsInHandler(t *testing.T) {
 		t.Errorf("Expected user_id=123, got %v", result["user_id"])
 	}
 }
+
+func TestMiddleware_Sampling(t *testing.T) {
+	var buf bytes.Buffer
+	slogHandler := slog.NewJSONHandler(&buf, nil)
+	logger := New(slog.New(slogHandler))
+
+	// count lines in buffer (each log is a line)
+	countLogs := func() int {
+		if buf.Len() == 0 {
+			return 0
+		}
+		return bytes.Count(buf.Bytes(), []byte("\n"))
+	}
+
+	t.Run("Rate 0.0", func(t *testing.T) {
+		buf.Reset()
+		handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}), WithLogger(logger), WithSuccessSampling(0.0))
+
+		for i := 0; i < 10; i++ {
+			req := httptest.NewRequest("GET", "/", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}
+
+		if count := countLogs(); count != 0 {
+			t.Errorf("Rate 0.0: Expected 0 logs for success, got %d", count)
+		}
+
+		// error should bypass sampling
+		buf.Reset()
+		errorHandler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			AddError(r.Context(), "oops")
+			w.WriteHeader(http.StatusOK)
+		}), WithLogger(logger), WithSuccessSampling(0.0))
+
+		errorHandler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+		if count := countLogs(); count != 1 {
+			t.Errorf("Rate 0.0: Expected 1 log for error, got %d", count)
+		}
+
+		// warning should bypass sampling
+		buf.Reset()
+		warnHandler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			AddWarning(r.Context(), "hmm")
+			w.WriteHeader(http.StatusOK)
+		}), WithLogger(logger), WithSuccessSampling(0.0))
+
+		warnHandler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+		if count := countLogs(); count != 1 {
+			t.Errorf("Rate 0.0: Expected 1 log for warning, got %d", count)
+		}
+
+		// 500 status request should bypass sampling
+		buf.Reset()
+		failHandler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}), WithLogger(logger), WithSuccessSampling(0.0))
+
+		failHandler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+		if count := countLogs(); count != 1 {
+			t.Errorf("Rate 0.0: Expected 1 log for 500 status, got %d", count)
+		}
+	})
+
+	t.Run("Rate 1.0", func(t *testing.T) {
+		buf.Reset()
+		handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}), WithLogger(logger), WithSuccessSampling(1.0))
+
+		for i := 0; i < 10; i++ {
+			req := httptest.NewRequest("GET", "/", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}
+
+		if count := countLogs(); count != 10 {
+			t.Errorf("Rate 1.0: Expected 10 logs, got %d", count)
+		}
+	})
+}
